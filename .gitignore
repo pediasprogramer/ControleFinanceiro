@@ -1,0 +1,23 @@
+# Ignorar node_modules em ambas as pastas
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Builds e caches
+frontend/dist/
+frontend/.vite/
+
+# Env e segredos (NUNCA suba!)
+.env
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Logs e temporários
+*.log
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
