@@ -44,3 +44,5 @@ app.listen(PORT, () => {
   console.log(`🎉 Servidor rodando na porta ${PORT}`);
   console.log(`   Teste: http://localhost:${PORT}/health`);
 });
+
+export default app;
