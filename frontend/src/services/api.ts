@@ -1,6 +1,6 @@
 // frontend/src/services/api.ts
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api');
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api');
 
 // Função auxiliar (trata erro e JSON automaticamente)
 export async function apiFetch(endpoint: string, options: RequestInit = {}) {

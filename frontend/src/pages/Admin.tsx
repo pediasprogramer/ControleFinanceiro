@@ -3,8 +3,18 @@ import { useState, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
 import { useNavigate } from 'react-router-dom';
 
+// Define a base URL igual ao api.ts (para não depender de export)
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3000/api' : '/api');
+
+interface User {
+  id: string;
+  email: string;
+  role_id: number;
+  updated_at: string;
+}
+
 export default function Admin() {
-  const [users, setUsers] = useState<any[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -18,21 +28,28 @@ export default function Admin() {
         return;
       }
 
+      setLoading(true);
+      setError(null);
+
       try {
-        // Verifica token e role via backend (/api/me)
-        const res = await fetch('http://127.0.0.1:3000/api/me', {
+        // Verifica token e role via backend usando API_BASE
+        const res = await fetch(`${API_BASE}/me`, {
+          method: 'GET',
           headers: {
+            'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
         });
 
         if (!res.ok) {
           if (res.status === 401) {
-            localStorage.removeItem("token"); // Limpa token inválido
+            localStorage.removeItem("token");
             navigate('/login');
             return;
           }
-          throw new Error('Erro ao verificar permissão');
+
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || `Erro ${res.status} ao verificar permissão`);
         }
 
         const { role } = await res.json();
@@ -43,7 +60,7 @@ export default function Admin() {
           return;
         }
 
-        // Se chegou aqui → é admin → carrega lista de usuários
+        // Carrega lista de usuários do Supabase
         const { data, error: supabaseError } = await supabase
           .from('profiles')
           .select('id, email, role_id, updated_at')
@@ -54,8 +71,8 @@ export default function Admin() {
         setUsers(data || []);
       } catch (err: any) {
         console.error('Erro no Admin:', err);
-        setError(err.message || 'Erro ao carregar dados');
-        if (err.message.includes('401') || err.message.includes('token')) {
+        setError(err.message || 'Erro ao carregar dados. Verifique sua conexão ou tente novamente.');
+        if (err.message?.includes('401') || err.message?.includes('token')) {
           localStorage.removeItem("token");
           navigate('/login');
         }
@@ -68,6 +85,8 @@ export default function Admin() {
   }, [navigate]);
 
   const updateRole = async (userId: string, newRole: number) => {
+    if (!confirm(`Tem certeza que deseja alterar o role para ${newRole}?`)) return;
+
     try {
       const { error } = await supabase
         .from('profiles')
@@ -76,16 +95,33 @@ export default function Admin() {
 
       if (error) throw error;
 
-      // Atualiza a lista local
-      setUsers(users.map(u => u.id === userId ? { ...u, role_id: newRole } : u));
-      alert('Nível de acesso atualizado!');
+      // Atualiza lista local
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role_id: newRole } : u));
+      alert('Nível de acesso atualizado com sucesso!');
     } catch (err: any) {
-      alert('Erro ao atualizar: ' + err.message);
+      alert('Erro ao atualizar role: ' + (err.message || 'Tente novamente'));
+      console.error('Erro updateRole:', err);
     }
   };
 
-  if (loading) return <div>Carregando usuários...</div>;
-  if (error) return <div>Erro: {error}</div>;
+  if (loading) {
+    return <div className="flex justify-center items-center min-h-screen">Carregando usuários...</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col justify-center items-center min-h-screen text-red-600">
+        <p className="text-xl mb-4">Erro</p>
+        <p>{error}</p>
+        <button
+          onClick={() => window.location.reload()}
+          className="mt-4 px-6 py-3 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
+          Tentar novamente
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 max-w-6xl mx-auto">
@@ -95,21 +131,21 @@ export default function Admin() {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">E-mail</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Role ID</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Ações</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">E-mail</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role ID</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {users.map(user => (
               <tr key={user.id}>
-                <td className="px-6 py-4 whitespace-nowrap">{user.email}</td>
-                <td className="px-6 py-4 whitespace-nowrap">{user.role_id}</td>
-                <td className="px-6 py-4 whitespace-nowrap">
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{user.email}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{user.role_id}</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                   <select
                     value={user.role_id}
                     onChange={e => updateRole(user.id, Number(e.target.value))}
-                    className="border rounded px-2 py-1"
+                    className="border border-gray-300 rounded-md px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   >
                     <option value={1}>1 - Acesso Total</option>
                     <option value={2}>2 - Editar</option>
@@ -121,6 +157,10 @@ export default function Admin() {
             ))}
           </tbody>
         </table>
+
+        {users.length === 0 && (
+          <p className="text-center py-8 text-gray-500">Nenhum usuário encontrado.</p>
+        )}
       </div>
     </div>
   );
