@@ -20,8 +20,16 @@ console.log('   JWT_SECRET:', process.env.JWT_SECRET ? 'definida' : 'usando fall
 const app = express();
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'https://controlefinanceiro.onrender.com'], 
-  credentials: true,
+  origin: [
+    'http://localhost:5173',               // dev local (Vite)
+    'http://localhost:3000',               // fallback local
+    'https://controlefinanceiro-e4fg.onrender.com',  // URL do seu frontend no Render (ajuste o ID se mudar)
+    'https://controlefinanceiro.onrender.com'        // se tiver outra variação
+    // '*',  // opcional para testes (permite todos, menos seguro - use só temporariamente)
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],  // métodos permitidos
+  allowedHeaders: ['Content-Type', 'Authorization'],     // headers que o frontend envia
+  credentials: true,                                     // permite cookies/tokens
 }));
 
 app.use(express.json());
