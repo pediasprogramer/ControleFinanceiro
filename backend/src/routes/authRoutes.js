@@ -1,7 +1,8 @@
 import express from "express"
 import { register, login } from "../controllers/authController.js"
 import { authMiddleware } from "../middleware/authMiddleware.js"
-import { supabase } from '../supabaseClient.js';
+import supabaseClient from '../supabaseClient.js';
+const supabase = supabaseClient.supabase || supabaseClient;
 
 const router = express.Router()
 
