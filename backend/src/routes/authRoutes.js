@@ -1,38 +1,59 @@
-import express from "express"
-import { register, login } from "../controllers/authController.js"
-import { authMiddleware } from "../middleware/authMiddleware.js"
-import supabaseClient from '../supabaseClient.js';
-const supabase = supabaseClient.supabase || supabaseClient;
+import express from "express";
+import { register, login } from "../controllers/authController.js";
+import { authMiddleware } from "../middleware/authMiddleware.js";
 
-const router = express.Router()
+// Import do SSR client (instale: npm install @supabase/ssr)
+import { createServerClient } from '@supabase/ssr';
 
-// Rotas Públicas (Acessadas pelo Register.tsx e Login.tsx)
-// Lembre-se: Essas rotas só aceitam POST. Se tentar abrir no navegador, dará erro.
-router.post("/register", register)
-router.post("/login", login)
+const router = express.Router();
 
-// Rotas Protegidas (Exigem o Token JWT no cabeçalho Authorization)
+// ──────────────────────────────────────────────────────────────
+// Configuração do Supabase Admin (service_role) - use .env depois
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://knjmnjsqszwicequojam.supabase.co';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_SERVICE_KEY) {
+  console.error('SUPABASE_SERVICE_ROLE_KEY não definida no .env do backend!');
+}
+
+// Função auxiliar para criar client com permissões completas (ignora RLS)
+function getSupabaseAdmin() {
+  if (!SUPABASE_SERVICE_KEY) {
+    throw new Error('Chave service_role não configurada');
+  }
+  return createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    global: {
+      fetch: (url, options) => fetch(url, { ...options, timeout: 30000 })
+    }
+  });
+}
+
+// Rotas Públicas (não mudam)
+router.post("/register", register);
+router.post("/login", login);
+
+// Rotas Protegidas (exigem token JWT)
 router.get("/dashboard", authMiddleware, (req, res) => {
   res.json({ 
     message: "Bem-vindo à área protegida do MESP 🔐",
-    user: req.user // Retorna os dados do seu e-mail e nível
-  })
-})
+    user: req.user
+  });
+});
 
-// Rota para o Frontend verificar o perfil e o nível de acesso (role)
 router.get("/me", authMiddleware, (req, res) => {
   res.json({
     email: req.user.email,
-    role: req.user.role // Aqui aparecerá 'Administrador' para o seu e-mail
-  })
-})
+    role: req.user.role
+  });
+});
 
+// GET /orcamentos - lista (agora com admin client)
 router.get("/orcamentos", authMiddleware, async (req, res) => {
-  const userId = req.user.id; // vem do token JWT
-
-  const mesAno = req.query.mes_ano; // ?mes_ano=2026-02
+  const userId = req.user.id;
+  const mesAno = req.query.mes_ano;
 
   try {
+    const supabase = getSupabaseAdmin();
     let query = supabase
       .from("orcamentos")
       .select("*")
@@ -44,18 +65,19 @@ router.get("/orcamentos", authMiddleware, async (req, res) => {
 
     const { data, error } = await query.order("data", { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      console.error("Erro Supabase GET orcamentos:", error.message, error.code, error.details);
+      throw error;
+    }
 
     res.json(data || []);
   } catch (err) {
-    console.error("Erro ao listar orçamentos:", err);
-    res.status(500).json({ message: "Erro ao carregar lançamentos." });
+    console.error("Erro ao listar orçamentos:", err.message || err);
+    res.status(500).json({ message: "Erro ao carregar lançamentos: " + (err.message || 'detalhe desconhecido') });
   }
 });
 
-
-// POST /api/orcamentos (adicionar)
-// POST /api/orcamentos (adicionar) - versão corrigida para evitar 500
+// POST /orcamentos - adicionar lançamento
 router.post("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const { tipo, descricao, valor, data, mes_ano } = req.body;
@@ -64,32 +86,19 @@ router.post("/orcamentos", authMiddleware, async (req, res) => {
     return res.status(400).json({ message: "Campos obrigatórios faltando." });
   }
 
-  // ──────────────────────────────────────────────────────────────
-  // Parte nova: cria client com SERVICE_ROLE KEY (ignora RLS)
-  const { createServerClient } = require('@supabase/ssr');  // import dinâmico para não quebrar outros arquivos
-
-  const SUPABASE_URL = 'https://knjmnjsqszwicequojam.supabase.co';
-  const SUPABASE_SERVICE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtuam1uanNxc3p3aWNlcXVvamFtIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcxNzE2MTQ3OCwiZXhwIjoyMDI3MjM3NDc4fQ.SEU_TOKEN_SERVICE_ROLE_AQUI';  // ← SUBSTITUA PELA SUA CHAVE SERVICE_ROLE REAL
-
-  const supabaseAdmin = createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    global: {
-      fetch: (url, options) => fetch(url, { ...options, timeout: 30000 })
-    }
-  });
-  // ──────────────────────────────────────────────────────────────
-
   try {
-    const { error } = await supabaseAdmin.from("orcamentos").insert({
+    const supabase = getSupabaseAdmin();
+    const { error } = await supabase.from("orcamentos").insert({
       user_id: userId,
       tipo,
       descricao,
-      valor: Number(valor),  // força número
+      valor: Number(valor),  // garante número
       data,
       mes_ano,
     });
 
     if (error) {
-      console.error("Erro Supabase insert:", error.message, error.details, error.code);
+      console.error("Erro Supabase POST orcamentos:", error.message, error.code, error.details);
       throw error;
     }
 
@@ -98,31 +107,35 @@ router.post("/orcamentos", authMiddleware, async (req, res) => {
     console.error("Erro ao adicionar lançamento:", err.message || err);
     res.status(500).json({ message: "Erro ao salvar lançamento: " + (err.message || 'detalhe desconhecido') });
   }
-});;
+});
 
-// Nova rota DELETE para excluir lançamento
+// DELETE /orcamentos/:id - excluir
 router.delete("/orcamentos/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const userId = req.user.id; // Pega do middleware JWT
+  const userId = req.user.id;
 
   if (!id) {
     return res.status(400).json({ message: "ID do lançamento obrigatório." });
   }
 
   try {
+    const supabase = getSupabaseAdmin();
     const { error } = await supabase
       .from("orcamentos")
       .delete()
       .eq("id", id)
-      .eq("user_id", userId); // Segurança: só deleta se for do usuário logado
+      .eq("user_id", userId);
 
-    if (error) throw error;
+    if (error) {
+      console.error("Erro Supabase DELETE orcamentos:", error.message, error.code, error.details);
+      throw error;
+    }
 
     res.status(200).json({ message: "Lançamento excluído com sucesso!" });
   } catch (err) {
-    console.error("Erro ao excluir lançamento:", err);
-    res.status(500).json({ message: "Erro ao excluir lançamento." });
+    console.error("Erro ao excluir lançamento:", err.message || err);
+    res.status(500).json({ message: "Erro ao excluir lançamento: " + (err.message || 'detalhe desconhecido') });
   }
 });
 
-export default router
+export default router;
