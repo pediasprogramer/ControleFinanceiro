@@ -3,7 +3,7 @@ import { register, login } from "../controllers/authController.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
 import { createServerClient } from '@supabase/ssr';
 
-// Chave anon hard-coded (do seu supabaseClient.js) para leitura
+// ──────────────────────────────────────────────────────────────
 // Configuração Supabase (usa .env do backend/Render)
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://knjmnjsqszwicequojam.supabase.co';
 const SUPABASE_ANON_KEY = process.env.SUPABASE_KEY;
@@ -13,7 +13,7 @@ console.log('[authRoutes] SUPABASE_URL:', SUPABASE_URL ? 'definida' : 'ausente')
 console.log('[authRoutes] SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY ? `definida (length: ${SUPABASE_ANON_KEY.length})` : 'NÃO DEFINIDA');
 console.log('[authRoutes] SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? `definida (length: ${SUPABASE_SERVICE_KEY.length})` : 'NÃO DEFINIDA');
 
-// Client para leitura (anon key)
+// Client para leitura (anon key - GET)
 function getSupabaseRead() {
   if (!SUPABASE_ANON_KEY) throw new Error('SUPABASE_KEY (anon) não definida');
   return createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -21,7 +21,7 @@ function getSupabaseRead() {
   });
 }
 
-// Client para escrita (service_role - ignora RLS)
+// Client para escrita (service_role - POST/DELETE)
 function getSupabaseAdmin() {
   if (!SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_SERVICE_ROLE_KEY não configurada');
   return createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
@@ -29,11 +29,14 @@ function getSupabaseAdmin() {
   });
 }
 
+// Cria o router AGORA (depois das funções)
+const router = express.Router();
+
 // Rotas públicas
 router.post("/register", register);
 router.post("/login", login);
 
-// Rotas básicas protegidas
+// Rotas protegidas básicas
 router.get("/dashboard", authMiddleware, (req, res) => {
   res.json({ message: "Área protegida", user: req.user });
 });
@@ -42,7 +45,7 @@ router.get("/me", authMiddleware, (req, res) => {
   res.json({ email: req.user.email, role: req.user.role });
 });
 
-// GET /orcamentos - usa anon para leitura
+// GET /orcamentos - leitura com anon key
 router.get("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const mesAno = req.query.mes_ano;
@@ -64,7 +67,7 @@ router.get("/orcamentos", authMiddleware, async (req, res) => {
   }
 });
 
-// POST /orcamentos - usa service_role para insert
+// POST /orcamentos - escrita com service_role
 router.post("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const { tipo, descricao, valor, data, mes_ano } = req.body;
@@ -93,7 +96,7 @@ router.post("/orcamentos", authMiddleware, async (req, res) => {
   }
 });
 
-// DELETE /orcamentos/:id - usa service_role
+// DELETE /orcamentos/:id - escrita com service_role
 router.delete("/orcamentos/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
