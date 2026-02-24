@@ -39,7 +39,7 @@ interface EvolucaoData {
   saldo: number;
 }
 
-const COLORS = ["#10B981", "#EF4444"]; // verde = receitas, vermelho = despesas
+const COLORS = ["#10B981", "#EF4444", "#3B82F6"]; // receitas, despesas, saldo
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -47,10 +47,11 @@ export default function Dashboard() {
   const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
   const [evolucao, setEvolucao] = useState<EvolucaoData[]>([]);
   const [loading, setLoading] = useState(true);
-  const [mesSelecionado, setMesSelecionado] = useState<string>(getMesAtual());
+
+  const [mesSelecionado, setMesSelecionado] = useState<string>("");
   const [anoSelecionado, setAnoSelecionado] = useState<string>(new Date().getFullYear().toString());
 
-  // Formulário
+  // Formulário novo lançamento
   const [tipo, setTipo] = useState<"receita" | "despesa">("receita");
   const [descricao, setDescricao] = useState("");
   const [valor, setValor] = useState("");
@@ -87,12 +88,19 @@ export default function Dashboard() {
 
   const carregarOrcamentos = async (token: string) => {
     try {
-      const data = await apiFetch(`/orcamentos?mes_ano=${mesSelecionado}`, {
+      let url = `/orcamentos?ano=${anoSelecionado}`;
+      if (mesSelecionado.trim() !== "") {
+        url += `&mes_ano=${mesSelecionado}`;
+      }
+
+      const data = await apiFetch(url, {
         headers: { Authorization: `Bearer ${token}` },
       });
-      setOrcamentos(data || []);
+
+      setOrcamentos(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Erro ao carregar orçamentos:", err);
+      setOrcamentos([]);
     }
   };
 
@@ -102,30 +110,43 @@ export default function Dashboard() {
         headers: { Authorization: `Bearer ${token}` },
       }) as Orcamento[];
 
-      const meses: string[] = [...new Set(orcamentosAno.map(o => o.mes_ano))].sort();
+      if (!Array.isArray(orcamentosAno)) {
+        setEvolucao([]);
+        return;
+      }
 
-      const evolucaoData: EvolucaoData[] = meses.map((mes: string) => {
-        const lancamentosMes: Orcamento[] = orcamentosAno.filter(o => o.mes_ano === mes);
+      const mesesOrdenados = [...new Set(orcamentosAno.map((o) => o.mes_ano))]
+        .filter(Boolean)
+        .sort();
 
-        const receitas: number = lancamentosMes
-          .filter(o => o.tipo === "receita")
-          .reduce((sum: number, o: Orcamento) => sum + Math.abs(o.valor || 0), 0);
+      const evolucaoData: EvolucaoData[] = [];
+      let saldoAcumulado = 0;
 
-        const despesas: number = lancamentosMes
-          .filter(o => o.tipo === "despesa")
-          .reduce((sum: number, o: Orcamento) => sum + Math.abs(o.valor || 0), 0);
+      for (const mes of mesesOrdenados) {
+        const lancamentosMes = orcamentosAno.filter((o) => o.mes_ano === mes);
 
-        return {
+        const receitas = lancamentosMes
+          .filter((o) => o.tipo === "receita")
+          .reduce((acc, o) => acc + Math.abs(Number(o.valor) || 0), 0);
+
+        const despesas = lancamentosMes
+          .filter((o) => o.tipo === "despesa")
+          .reduce((acc, o) => acc + Math.abs(Number(o.valor) || 0), 0);
+
+        saldoAcumulado += receitas - despesas;
+
+        evolucaoData.push({
           mes_ano: mes,
           receitas,
           despesas,
-          saldo: receitas - despesas,
-        };
-      });
+          saldo: saldoAcumulado,
+        });
+      }
 
       setEvolucao(evolucaoData);
     } catch (err) {
       console.error("Erro ao carregar evolução:", err);
+      setEvolucao([]);
     }
   };
 
@@ -135,13 +156,15 @@ export default function Dashboard() {
       return;
     }
 
-    const valorNum = Number(valor.replace(",", "."));
+    const valorNum = limparMoeda(valor);
     if (isNaN(valorNum) || valorNum <= 0) {
       alert("Valor inválido! Use números positivos.");
       return;
     }
 
     const token = localStorage.getItem("token");
+
+    if (!token) return;
 
     try {
       const mesAno = dataLancamento.slice(0, 7);
@@ -162,8 +185,9 @@ export default function Dashboard() {
       setDescricao("");
       setValor("");
       setDataLancamento(getDataAtual());
-      carregarOrcamentos(token!);
-      carregarEvolucao(token!);
+
+      await carregarOrcamentos(token);
+      await carregarEvolucao(token);
     } catch (err: any) {
       alert("Erro ao adicionar lançamento: " + (err.message || "Tente novamente."));
     }
@@ -174,6 +198,8 @@ export default function Dashboard() {
 
     const token = localStorage.getItem("token");
 
+    if (!token) return;
+
     try {
       await apiFetch(`/orcamentos/${id}`, {
         method: "DELETE",
@@ -181,15 +207,20 @@ export default function Dashboard() {
       });
 
       alert("Lançamento excluído com sucesso!");
-      carregarOrcamentos(token!);
-      carregarEvolucao(token!);
+      await carregarOrcamentos(token);
+      await carregarEvolucao(token);
     } catch (err: any) {
       alert("Erro ao excluir lançamento: " + (err.message || "Tente novamente."));
     }
   };
 
   const exportarCSV = () => {
-    const csvData = orcamentos.map(o => ({
+    if (orcamentos.length === 0) {
+      alert("Não há dados para exportar.");
+      return;
+    }
+
+    const csvData = orcamentos.map((o) => ({
       Data: new Date(o.data).toLocaleDateString("pt-BR"),
       Tipo: o.tipo === "receita" ? "Receita" : "Despesa",
       Descrição: o.descricao,
@@ -200,21 +231,33 @@ export default function Dashboard() {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `lancamentos_${mesSelecionado}.csv`;
+    link.download = mesSelecionado
+      ? `lancamentos_${mesSelecionado}.csv`
+      : `lancamentos_${anoSelecionado}_completo.csv`;
     link.click();
   };
 
   const exportarExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(orcamentos.map(o => ({
-      Data: new Date(o.data).toLocaleDateString("pt-BR"),
-      Tipo: o.tipo === "receita" ? "Receita" : "Despesa",
-      Descrição: o.descricao,
-      Valor: Math.abs(o.valor),
-    })));
+    if (orcamentos.length === 0) {
+      alert("Não há dados para exportar.");
+      return;
+    }
+
+    const ws = XLSX.utils.json_to_sheet(
+      orcamentos.map((o) => ({
+        Data: new Date(o.data).toLocaleDateString("pt-BR"),
+        Tipo: o.tipo === "receita" ? "Receita" : "Despesa",
+        Descrição: o.descricao,
+        Valor: Math.abs(o.valor),
+      }))
+    );
 
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Lançamentos");
-    XLSX.writeFile(wb, `lancamentos_${mesSelecionado}.xlsx`);
+    const nomeArquivo = mesSelecionado
+      ? `lancamentos_${mesSelecionado}.xlsx`
+      : `lancamentos_${anoSelecionado}_completo.xlsx`;
+    XLSX.writeFile(wb, nomeArquivo);
   };
 
   const handleLogout = () => {
@@ -225,28 +268,33 @@ export default function Dashboard() {
   // Cálculos para gráfico de pizza
   const totalReceitas = orcamentos
     .filter((o) => o.tipo === "receita")
-    .reduce((sum, o) => sum + Math.abs(o.valor || 0), 0);
+    .reduce((acc, o) => acc + Math.abs(Number(o.valor) || 0), 0);
 
   const totalDespesas = orcamentos
     .filter((o) => o.tipo === "despesa")
-    .reduce((sum, o) => sum + Math.abs(o.valor || 0), 0);
+    .reduce((acc, o) => acc + Math.abs(Number(o.valor) || 0), 0);
 
   const saldo = totalReceitas - totalDespesas;
 
   const dadosGrafico: GraficoData[] = [
     { name: "Receitas", value: totalReceitas },
     { name: "Despesas", value: totalDespesas },
+    { name: "Saldo", value: Math.abs(saldo) },
   ].filter((item) => item.value > 0);
 
   if (loading) {
-    return <div className="min-h-screen flex items-center justify-center text-lg">Carregando dados...</div>;
+    return (
+      <div className="min-h-screen flex items-center justify-center text-lg">
+        Carregando dados...
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Navbar */}
       <nav className="bg-white shadow-md px-6 py-4 flex justify-between items-center sticky top-0 z-10">
-        <h1 className="text-2xl font-bold text-gray-800">Meu Controle Financeiro</h1>
+        <h1 className="text-2xl font-bold text-gray-800">FriendMoney</h1>
         <div className="flex items-center gap-4">
           {user?.role === "Administrador" && (
             <button
@@ -277,26 +325,37 @@ export default function Dashboard() {
         </div>
 
         {/* Filtros */}
-        <div className="mb-8 flex flex-col sm:flex-row sm:items-center gap-4 bg-white p-5 rounded-xl shadow-sm">
-          <label className="font-medium text-gray-700 text-lg">Filtrar por mês:</label>
-          <input
-            type="month"
-            value={mesSelecionado}
-            onChange={(e) => setMesSelecionado(e.target.value)}
-            className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-          />
+        <div className="mb-8 flex flex-col sm:flex-row sm:items-end gap-6 bg-white p-6 rounded-xl shadow-sm">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Filtrar por mês (opcional)
+            </label>
+            <input
+              type="month"
+              value={mesSelecionado}
+              onChange={(e) => setMesSelecionado(e.target.value)}
+              className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto"
+            />
+          </div>
 
-          <label className="font-medium text-gray-700 text-lg ml-4">Ano:</label>
-          <select
-            value={anoSelecionado}
-            onChange={(e) => setAnoSelecionado(e.target.value)}
-            className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-          >
-            <option value="2025">2025</option>
-            <option value="2026">2026</option>
-            <option value="2027">2027</option>
-            {/* Adicione mais anos conforme necessário */}
-          </select>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Ano</label>
+            <select
+              value={anoSelecionado}
+              onChange={(e) => setAnoSelecionado(e.target.value)}
+              className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-auto"
+            >
+              <option value="2025">2025</option>
+              <option value="2026">2026</option>
+              <option value="2027">2027</option>
+              <option value="2028">2028</option>
+              <option value="2029">2029</option>
+            </select>
+          </div>
+
+          <div className="text-sm text-gray-500">
+            {mesSelecionado ? "Mostrando mês selecionado" : "Mostrando todo o ano"}
+          </div>
         </div>
 
         {/* Cards de resumo */}
@@ -315,13 +374,19 @@ export default function Dashboard() {
             </p>
           </div>
 
-          <div className={`rounded-xl p-6 shadow-sm hover:shadow-md transition border ${
-            saldo >= 0 ? "bg-blue-50 border-blue-200" : "bg-red-50 border-red-200"
-          }`}>
-            <h3 className="text-lg font-semibold text-gray-700 mb-1">Saldo do mês</h3>
-            <p className={`text-3xl font-bold ${
-              saldo >= 0 ? "text-blue-800" : "text-red-800"
-            }`}>
+          <div
+            className={`rounded-xl p-6 shadow-sm hover:shadow-md transition border ${
+              saldo >= 0 ? "bg-blue-50 border-blue-200" : "bg-red-50 border-red-200"
+            }`}
+          >
+            <h3 className="text-lg font-semibold text-gray-700 mb-1">
+              Saldo do {mesSelecionado ? "mês" : "período"}
+            </h3>
+            <p
+              className={`text-3xl font-bold ${
+                saldo >= 0 ? "text-blue-800" : "text-red-800"
+              }`}
+            >
               R$ {saldo.toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
             </p>
           </div>
@@ -347,7 +412,8 @@ export default function Dashboard() {
         {dadosGrafico.length > 0 ? (
           <div className="bg-white rounded-xl shadow-sm p-8 mb-10">
             <h3 className="text-2xl font-bold text-gray-800 mb-6">
-              Distribuição Receitas × Despesas ({mesSelecionado})
+              Distribuição Receitas × Despesas × Saldo (
+              {mesSelecionado || `ano ${anoSelecionado}`})
             </h3>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
@@ -359,14 +425,25 @@ export default function Dashboard() {
                     labelLine={true}
                     outerRadius={110}
                     dataKey="value"
-                    // @ts-ignore
-                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    label={(props: any) => {
+                      const { name, percent } = props;
+                      return percent > 0 ? `${name} ${(percent * 100).toFixed(0)}%` : "";
+                    }}
                   >
                     {dadosGrafico.map((_, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      <Cell 
+                        key={`cell-${index}`} 
+                        fill={COLORS[index % COLORS.length]} 
+                      />
                     ))}
                   </Pie>
-                  <Tooltip formatter={(value) => `R$ ${Number(value).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} />
+                  <Tooltip
+                    formatter={(value) =>
+                      `R$ ${Number(value).toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2,
+                      })}`
+                    }
+                  />
                   <Legend verticalAlign="bottom" height={36} />
                 </PieChart>
               </ResponsiveContainer>
@@ -374,15 +451,15 @@ export default function Dashboard() {
           </div>
         ) : (
           <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-8 text-center mb-10 text-gray-700">
-            Nenhum lançamento registrado neste mês para exibir no gráfico.
+            Nenhum lançamento registrado neste período para exibir no gráfico.
           </div>
         )}
 
-        {/* Gráfico de linha */}
+        {/* Gráfico de linha - evolução */}
         {evolucao.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm p-8 mb-10">
             <h3 className="text-2xl font-bold text-gray-800 mb-6">
-              Evolução Receitas × Despesas ({anoSelecionado})
+              Evolução Receitas × Despesas × Saldo acumulado ({anoSelecionado})
             </h3>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
@@ -390,11 +467,32 @@ export default function Dashboard() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="mes_ano" />
                   <YAxis />
-                  <Tooltip formatter={(value) => `R$ ${Number(value).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} />
+                  <Tooltip
+                    formatter={(value) =>
+                      `R$ ${Number(value).toLocaleString("pt-BR", {
+                        minimumFractionDigits: 2,
+                      })}`
+                    }
+                  />
                   <Legend />
-                  <Line type="monotone" dataKey="receitas" stroke="#10B981" name="Receitas" />
-                  <Line type="monotone" dataKey="despesas" stroke="#EF4444" name="Despesas" />
-                  <Line type="monotone" dataKey="saldo" stroke="#3B82F6" name="Saldo" />
+                  <Line
+                    type="monotone"
+                    dataKey="receitas"
+                    stroke="#10B981"
+                    name="Receitas"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="despesas"
+                    stroke="#EF4444"
+                    name="Despesas"
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="saldo"
+                    stroke="#3B82F6"
+                    name="Saldo acumulado"
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -403,11 +501,15 @@ export default function Dashboard() {
 
         {/* Formulário novo lançamento */}
         <div className="bg-white rounded-xl shadow-sm p-8 mb-10">
-          <h3 className="text-2xl font-bold text-gray-800 mb-6">Adicionar Lançamento</h3>
+          <h3 className="text-2xl font-bold text-gray-800 mb-6">
+            Adicionar Lançamento
+          </h3>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Tipo</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Tipo
+              </label>
               <select
                 value={tipo}
                 onChange={(e) => setTipo(e.target.value as "receita" | "despesa")}
@@ -419,7 +521,9 @@ export default function Dashboard() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Data</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Data
+              </label>
               <input
                 type="date"
                 value={dataLancamento}
@@ -429,7 +533,9 @@ export default function Dashboard() {
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Descrição</label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Descrição
+              </label>
               <input
                 type="text"
                 value={descricao}
@@ -439,15 +545,22 @@ export default function Dashboard() {
               />
             </div>
 
-            <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-gray-700 mb-2">Valor (R$)</label>
-              <input
-                type="text"
-                value={valor}
-                onChange={(e) => setValor(e.target.value.replace(/[^0-9,]/g, ""))}
-                placeholder="0,00"
-                className="w-full border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              />
+            <div className="md:col-span-2 relative">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Valor (R$)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">
+                  R$
+                </span>
+                <input
+                  type="text"
+                  value={valor}
+                  onChange={(e) => setValor(formatarMoeda(e.target.value))}
+                  placeholder="0,00"
+                  className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none text-right font-medium"
+                />
+              </div>
             </div>
           </div>
 
@@ -459,15 +572,18 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {/* Lista de lançamentos com exclusão */}
+        {/* Lista de lançamentos */}
         <div className="bg-white rounded-xl shadow-sm p-8">
           <h3 className="text-2xl font-bold text-gray-800 mb-6">
-            Lançamentos de {mesSelecionado || "selecione um mês"}
+            Lançamentos{" "}
+            {mesSelecionado
+              ? `de ${mesSelecionado}`
+              : `do ano ${anoSelecionado}`}
           </h3>
 
           {orcamentos.length === 0 ? (
             <p className="text-gray-500 text-center py-12 text-lg">
-              Nenhum lançamento registrado neste mês.
+              Nenhum lançamento registrado neste período.
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -500,13 +616,17 @@ export default function Dashboard() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span
                           className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${
-                            o.tipo === "receita" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
+                            o.tipo === "receita"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800"
                           }`}
                         >
                           {o.tipo === "receita" ? "Receita" : "Despesa"}
                         </span>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900">{o.descricao}</td>
+                      <td className="px-6 py-4 text-sm text-gray-900">
+                        {o.descricao}
+                      </td>
                       <td className="px-6 py-4 text-right text-sm font-medium">
                         <span className={o.valor >= 0 ? "text-green-600" : "text-red-600"}>
                           R$ {Math.abs(o.valor).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
@@ -533,12 +653,23 @@ export default function Dashboard() {
 }
 
 // Helpers
-function getMesAtual() {
-  const hoje = new Date();
-  return hoje.toISOString().slice(0, 7); // YYYY-MM
-}
-
 function getDataAtual() {
   const hoje = new Date();
-  return hoje.toISOString().slice(0, 10); // YYYY-MM-DD
+  return hoje.toISOString().slice(0, 10);
+}
+
+function formatarMoeda(valorInput: string): string {
+  let v = valorInput.replace(/\D/g, "");
+  if (v === "") return "";
+  const num = Number(v) / 100;
+  return num.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function limparMoeda(valorFormatado: string): number {
+  if (!valorFormatado) return 0;
+  const limpo = valorFormatado.replace(/[R$\s.]/g, "").replace(",", ".");
+  return Number(limpo) || 0;
 }
