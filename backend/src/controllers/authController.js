@@ -1,122 +1,103 @@
-import express from "express";
-import { register, login } from "../controllers/authController.js";
-import { authMiddleware } from "../middleware/authMiddleware.js";
-import { createServerClient } from '@supabase/ssr';
+// backend/src/controllers/authController.js
 
-const router = express.Router();
+import { supabase } from '../supabaseClient.js';  // ou supabaseServerClient se você tiver
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
-// Configuração Supabase Admin (service_role) – pega do .env
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://knjmnjsqszwicequojam.supabase.co';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const JWT_SECRET = process.env.JWT_SECRET || 'SEGREDO_SUPER_FORTE_MUDE_ISSO_AGORA';
 
-console.log('Backend authRoutes: SUPABASE_URL carregada?', !!SUPABASE_URL);
-console.log('Backend authRoutes: SUPABASE_SERVICE_KEY carregada?', !!SUPABASE_SERVICE_KEY ? 'SIM (comprimento: ' + SUPABASE_SERVICE_KEY.length + ')' : 'NÃO - ERRO CRÍTICO');
+// Registro de usuário
+export const register = async (req, res) => {
+  const { email, password } = req.body;
 
-if (!SUPABASE_SERVICE_KEY) {
-  console.error('ERRO CRÍTICO: SUPABASE_SERVICE_ROLE_KEY não definida no .env ou Render Environment');
-}
-
-// Client admin (ignora RLS)
-function getSupabaseAdmin() {
-  if (!SUPABASE_SERVICE_KEY) {
-    throw new Error('Chave service_role não configurada - verifique Render Environment Variables');
+  if (!email || !password) {
+    return res.status(400).json({ message: 'E-mail e senha são obrigatórios.' });
   }
-  return createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    global: { fetch: (url, options) => fetch(url, { ...options, timeout: 30000 }) }
-  });
-}
 
-// Rotas públicas
-router.post("/register", register);
-router.post("/login", login);
+  if (password.length < 6) {
+    return res.status(400).json({ message: 'Senha deve ter pelo menos 6 caracteres.' });
+  }
 
-// Rotas protegidas básicas
-router.get("/dashboard", authMiddleware, (req, res) => {
-  res.json({ message: "Bem-vindo à área protegida", user: req.user });
-});
-
-router.get("/me", authMiddleware, (req, res) => {
-  res.json({
-    email: req.user.email,
-    role: req.user.role
-  });
-});
-
-// GET /orcamentos
-router.get("/orcamentos", authMiddleware, async (req, res) => {
-  const userId = req.user.id;
-  const mesAno = req.query.mes_ano;
+  const normalizedEmail = email.toLowerCase().trim();
 
   try {
-    const supabase = getSupabaseAdmin();
-    let query = supabase.from("orcamentos").select("*").eq("user_id", userId);
+    // Verifica se já existe
+    const { data: existing } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .single();
 
-    if (mesAno) {
-      query = query.eq("mes_ano", mesAno);
+    if (existing) {
+      return res.status(409).json({ message: 'E-mail já cadastrado.' });
     }
 
-    const { data, error } = await query.order("data", { ascending: false });
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insere novo usuário (role_id padrão 4 = Apenas Ler, ou mude para 1 se for admin)
+    const { data: newUser, error } = await supabase
+      .from('profiles')
+      .insert({
+        email: normalizedEmail,
+        password: hashedPassword,
+        role_id: normalizedEmail === 'pedro.pneto@esporte.gov.br' ? 1 : 4,  // seu e-mail como admin
+      })
+      .select()
+      .single();
 
     if (error) throw error;
 
-    res.json(data || []);
+    res.status(201).json({ message: 'Usuário cadastrado com sucesso!' });
   } catch (err) {
-    console.error("GET /orcamentos erro:", err.message || err);
-    res.status(500).json({ message: "Erro ao carregar lançamentos: " + (err.message || 'detalhe desconhecido') });
+    console.error('Erro no register:', err.message || err);
+    res.status(500).json({ message: 'Erro ao cadastrar usuário.' });
   }
-});
+};
 
-// POST /orcamentos
-router.post("/orcamentos", authMiddleware, async (req, res) => {
-  const userId = req.user.id;
-  const { tipo, descricao, valor, data, mes_ano } = req.body;
+// Login de usuário
+export const login = async (req, res) => {
+  const { email, password } = req.body;
 
-  if (!tipo || !descricao || !valor || !data || !mes_ano) {
-    return res.status(400).json({ message: "Campos obrigatórios faltando" });
+  if (!email || !password) {
+    return res.status(400).json({ message: 'E-mail e senha são obrigatórios.' });
   }
+
+  const normalizedEmail = email.toLowerCase().trim();
 
   try {
-    const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("orcamentos").insert({
-      user_id: userId,
-      tipo,
-      descricao,
-      valor: Number(valor),
-      data,
-      mes_ano,
-    });
+    const { data: user, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('email', normalizedEmail)
+      .single();
 
-    if (error) throw error;
+    if (error || !user) {
+      console.log(`Usuário não encontrado: ${normalizedEmail}`);
+      return res.status(401).json({ message: 'E-mail ou senha incorretos.' });
+    }
 
-    res.status(201).json({ message: "Lançamento adicionado!" });
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
+      console.log(`Senha inválida para: ${normalizedEmail}`);
+      return res.status(401).json({ message: 'E-mail ou senha incorretos.' });
+    }
+
+    // Gera token JWT
+    const token = jwt.sign(
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role_id === 1 ? 'Administrador' : 'Ver',  // ajuste conforme sua lógica
+      },
+      JWT_SECRET,
+      { expiresIn: '1h' }
+    );
+
+    console.log(`Login bem-sucedido: ${normalizedEmail} | Token gerado (primeiros 20 chars): ${token.substring(0, 20)}...`);
+
+    res.json({ token });
   } catch (err) {
-    console.error("POST /orcamentos erro:", err.message || err);
-    res.status(500).json({ message: "Erro ao adicionar: " + (err.message || 'detalhe desconhecido') });
+    console.error('Erro no login:', err.message || err);
+    res.status(500).json({ message: 'Erro interno no servidor.' });
   }
-});
-
-// DELETE /orcamentos/:id
-router.delete("/orcamentos/:id", authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  const userId = req.user.id;
-
-  if (!id) return res.status(400).json({ message: "ID obrigatório" });
-
-  try {
-    const supabase = getSupabaseAdmin();
-    const { error } = await supabase
-      .from("orcamentos")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
-
-    if (error) throw error;
-
-    res.json({ message: "Excluído com sucesso!" });
-  } catch (err) {
-    console.error("DELETE /orcamentos erro:", err.message || err);
-    res.status(500).json({ message: "Erro ao excluir: " + (err.message || 'detalhe desconhecido') });
-  }
-});
-
-export default router;
+};
