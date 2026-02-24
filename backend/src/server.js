@@ -20,7 +20,7 @@ console.log('   JWT_SECRET:', process.env.JWT_SECRET ? 'definida' : 'usando fall
 const app = express();
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'https://controlefinanceiro.onrender.com'], 
   credentials: true,
 }));
 
@@ -44,5 +44,6 @@ app.listen(PORT, () => {
   console.log(`🎉 Servidor rodando na porta ${PORT}`);
   console.log(`   Teste: http://localhost:${PORT}/health`);
 });
+
 
 export default app;
