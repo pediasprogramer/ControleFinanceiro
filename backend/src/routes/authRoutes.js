@@ -1,89 +1,76 @@
 import express from "express";
 import { register, login } from "../controllers/authController.js";
 import { authMiddleware } from "../middleware/authMiddleware.js";
-
-// Import do SSR client (instale: npm install @supabase/ssr)
 import { createServerClient } from '@supabase/ssr';
 
-const router = express.Router();
-
-// ──────────────────────────────────────────────────────────────
-// Configuração do Supabase Admin (service_role) - use .env depois
+// Chave anon hard-coded (do seu supabaseClient.js) para leitura
+// Configuração Supabase (usa .env do backend/Render)
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://knjmnjsqszwicequojam.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_KEY;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!SUPABASE_SERVICE_KEY) {
-  console.error('SUPABASE_SERVICE_ROLE_KEY não definida no .env do backend!');
-}
+console.log('[authRoutes] SUPABASE_URL:', SUPABASE_URL ? 'definida' : 'ausente');
+console.log('[authRoutes] SUPABASE_ANON_KEY:', SUPABASE_ANON_KEY ? `definida (length: ${SUPABASE_ANON_KEY.length})` : 'NÃO DEFINIDA');
+console.log('[authRoutes] SUPABASE_SERVICE_KEY:', SUPABASE_SERVICE_KEY ? `definida (length: ${SUPABASE_SERVICE_KEY.length})` : 'NÃO DEFINIDA');
 
-// Função auxiliar para criar client com permissões completas (ignora RLS)
-function getSupabaseAdmin() {
-  if (!SUPABASE_SERVICE_KEY) {
-    throw new Error('Chave service_role não configurada');
-  }
-  return createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-    global: {
-      fetch: (url, options) => fetch(url, { ...options, timeout: 30000 })
-    }
+// Client para leitura (anon key)
+function getSupabaseRead() {
+  if (!SUPABASE_ANON_KEY) throw new Error('SUPABASE_KEY (anon) não definida');
+  return createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    cookies: { getAll: () => [], setAll: () => {} }
   });
 }
 
-// Rotas Públicas (não mudam)
+// Client para escrita (service_role - ignora RLS)
+function getSupabaseAdmin() {
+  if (!SUPABASE_SERVICE_KEY) throw new Error('SUPABASE_SERVICE_ROLE_KEY não configurada');
+  return createServerClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
+    cookies: { getAll: () => [], setAll: () => {} }
+  });
+}
+
+// Rotas públicas
 router.post("/register", register);
 router.post("/login", login);
 
-// Rotas Protegidas (exigem token JWT)
+// Rotas básicas protegidas
 router.get("/dashboard", authMiddleware, (req, res) => {
-  res.json({ 
-    message: "Bem-vindo à área protegida do MESP 🔐",
-    user: req.user
-  });
+  res.json({ message: "Área protegida", user: req.user });
 });
 
 router.get("/me", authMiddleware, (req, res) => {
-  res.json({
-    email: req.user.email,
-    role: req.user.role
-  });
+  res.json({ email: req.user.email, role: req.user.role });
 });
 
-// GET /orcamentos - lista (agora com admin client)
+// GET /orcamentos - usa anon para leitura
 router.get("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const mesAno = req.query.mes_ano;
+  console.log(`[GET /orcamentos] userId: ${userId}, mesAno: ${mesAno || 'todos'}`);
 
   try {
-    const supabase = getSupabaseAdmin();
-    let query = supabase
-      .from("orcamentos")
-      .select("*")
-      .eq("user_id", userId);
-
-    if (mesAno) {
-      query = query.eq("mes_ano", mesAno);
-    }
+    const supabase = getSupabaseRead();
+    let query = supabase.from("orcamentos").select("*").eq("user_id", userId);
+    if (mesAno) query = query.eq("mes_ano", mesAno);
 
     const { data, error } = await query.order("data", { ascending: false });
 
-    if (error) {
-      console.error("Erro Supabase GET orcamentos:", error.message, error.code, error.details);
-      throw error;
-    }
+    if (error) throw error;
 
     res.json(data || []);
   } catch (err) {
-    console.error("Erro ao listar orçamentos:", err.message || err);
-    res.status(500).json({ message: "Erro ao carregar lançamentos: " + (err.message || 'detalhe desconhecido') });
+    console.error('[GET /orcamentos] erro:', err.message || err);
+    res.status(500).json({ message: "Erro ao carregar lançamentos" });
   }
 });
 
-// POST /orcamentos - adicionar lançamento
+// POST /orcamentos - usa service_role para insert
 router.post("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
   const { tipo, descricao, valor, data, mes_ano } = req.body;
 
   if (!tipo || !descricao || !valor || !data || !mes_ano) {
-    return res.status(400).json({ message: "Campos obrigatórios faltando." });
+    return res.status(400).json({ message: "Campos obrigatórios faltando" });
   }
 
   try {
@@ -92,49 +79,37 @@ router.post("/orcamentos", authMiddleware, async (req, res) => {
       user_id: userId,
       tipo,
       descricao,
-      valor: Number(valor),  // garante número
+      valor: Number(valor),
       data,
       mes_ano,
     });
 
-    if (error) {
-      console.error("Erro Supabase POST orcamentos:", error.message, error.code, error.details);
-      throw error;
-    }
+    if (error) throw error;
 
-    res.status(201).json({ message: "Lançamento adicionado com sucesso!" });
+    res.status(201).json({ message: "Adicionado com sucesso!" });
   } catch (err) {
-    console.error("Erro ao adicionar lançamento:", err.message || err);
-    res.status(500).json({ message: "Erro ao salvar lançamento: " + (err.message || 'detalhe desconhecido') });
+    console.error('[POST /orcamentos] erro:', err.message || err);
+    res.status(500).json({ message: "Erro ao adicionar" });
   }
 });
 
-// DELETE /orcamentos/:id - excluir
+// DELETE /orcamentos/:id - usa service_role
 router.delete("/orcamentos/:id", authMiddleware, async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
 
-  if (!id) {
-    return res.status(400).json({ message: "ID do lançamento obrigatório." });
-  }
+  if (!id) return res.status(400).json({ message: "ID obrigatório" });
 
   try {
     const supabase = getSupabaseAdmin();
-    const { error } = await supabase
-      .from("orcamentos")
-      .delete()
-      .eq("id", id)
-      .eq("user_id", userId);
+    const { error } = await supabase.from("orcamentos").delete().eq("id", id).eq("user_id", userId);
 
-    if (error) {
-      console.error("Erro Supabase DELETE orcamentos:", error.message, error.code, error.details);
-      throw error;
-    }
+    if (error) throw error;
 
-    res.status(200).json({ message: "Lançamento excluído com sucesso!" });
+    res.json({ message: "Excluído com sucesso!" });
   } catch (err) {
-    console.error("Erro ao excluir lançamento:", err.message || err);
-    res.status(500).json({ message: "Erro ao excluir lançamento: " + (err.message || 'detalhe desconhecido') });
+    console.error('[DELETE /orcamentos] erro:', err.message || err);
+    res.status(500).json({ message: "Erro ao excluir" });
   }
 });
 
