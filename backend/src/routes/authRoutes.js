@@ -52,6 +52,7 @@ router.get("/orcamentos", authMiddleware, async (req, res) => {
   }
 });
 
+
 // POST /api/orcamentos (adicionar)
 router.post("/orcamentos", authMiddleware, async (req, res) => {
   const userId = req.user.id;
@@ -77,6 +78,31 @@ router.post("/orcamentos", authMiddleware, async (req, res) => {
   } catch (err) {
     console.error("Erro ao adicionar lançamento:", err);
     res.status(500).json({ message: "Erro ao salvar lançamento." });
+  }
+});
+
+// Nova rota DELETE para excluir lançamento
+router.delete("/orcamentos/:id", authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user.id; // Pega do middleware JWT
+
+  if (!id) {
+    return res.status(400).json({ message: "ID do lançamento obrigatório." });
+  }
+
+  try {
+    const { error } = await supabase
+      .from("orcamentos")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", userId); // Segurança: só deleta se for do usuário logado
+
+    if (error) throw error;
+
+    res.status(200).json({ message: "Lançamento excluído com sucesso!" });
+  } catch (err) {
+    console.error("Erro ao excluir lançamento:", err);
+    res.status(500).json({ message: "Erro ao excluir lançamento." });
   }
 });
 

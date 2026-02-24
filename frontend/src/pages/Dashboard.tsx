@@ -1,13 +1,42 @@
-// frontend/src/pages/Dashboard.tsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { apiFetch } from "../services/api"; // função auxiliar do api.ts
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import { apiFetch } from "../services/api";
+import {
+  PieChart,
+  Pie,
+  Cell,
+  Tooltip,
+  ResponsiveContainer,
+  Legend,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+} from "recharts";
+import Papa from "papaparse";
+import * as XLSX from "xlsx";
 
-// Interface simples para os dados do gráfico (resolve erro no entry)
+// Interfaces
+interface Orcamento {
+  id: string;
+  tipo: "receita" | "despesa";
+  descricao: string;
+  valor: number;
+  data: string;
+  mes_ano: string;
+}
+
 interface GraficoData {
   name: string;
   value: number;
+}
+
+interface EvolucaoData {
+  mes_ano: string;
+  receitas: number;
+  despesas: number;
+  saldo: number;
 }
 
 const COLORS = ["#10B981", "#EF4444"]; // verde = receitas, vermelho = despesas
@@ -15,9 +44,11 @@ const COLORS = ["#10B981", "#EF4444"]; // verde = receitas, vermelho = despesas
 export default function Dashboard() {
   const navigate = useNavigate();
   const [user, setUser] = useState<any>(null);
-  const [orcamentos, setOrcamentos] = useState<any[]>([]);
+  const [orcamentos, setOrcamentos] = useState<Orcamento[]>([]);
+  const [evolucao, setEvolucao] = useState<EvolucaoData[]>([]);
   const [loading, setLoading] = useState(true);
   const [mesSelecionado, setMesSelecionado] = useState<string>(getMesAtual());
+  const [anoSelecionado, setAnoSelecionado] = useState<string>(new Date().getFullYear().toString());
 
   // Formulário
   const [tipo, setTipo] = useState<"receita" | "despesa">("receita");
@@ -35,14 +66,13 @@ export default function Dashboard() {
 
     const inicializar = async () => {
       try {
-        // Opcional: pegar dados do usuário logado via backend
         const userData = await apiFetch("/me", {
           headers: { Authorization: `Bearer ${token}` },
         });
-
         setUser(userData);
 
         await carregarOrcamentos(token);
+        await carregarEvolucao(token);
       } catch (err) {
         console.error("Erro ao inicializar dashboard:", err);
         localStorage.removeItem("token");
@@ -53,7 +83,7 @@ export default function Dashboard() {
     };
 
     inicializar();
-  }, [navigate, mesSelecionado]);
+  }, [navigate, mesSelecionado, anoSelecionado]);
 
   const carregarOrcamentos = async (token: string) => {
     try {
@@ -63,6 +93,39 @@ export default function Dashboard() {
       setOrcamentos(data || []);
     } catch (err) {
       console.error("Erro ao carregar orçamentos:", err);
+    }
+  };
+
+  const carregarEvolucao = async (token: string) => {
+    try {
+      const orcamentosAno = await apiFetch(`/orcamentos?ano=${anoSelecionado}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      }) as Orcamento[];
+
+      const meses: string[] = [...new Set(orcamentosAno.map(o => o.mes_ano))].sort();
+
+      const evolucaoData: EvolucaoData[] = meses.map((mes: string) => {
+        const lancamentosMes: Orcamento[] = orcamentosAno.filter(o => o.mes_ano === mes);
+
+        const receitas: number = lancamentosMes
+          .filter(o => o.tipo === "receita")
+          .reduce((sum: number, o: Orcamento) => sum + Math.abs(o.valor || 0), 0);
+
+        const despesas: number = lancamentosMes
+          .filter(o => o.tipo === "despesa")
+          .reduce((sum: number, o: Orcamento) => sum + Math.abs(o.valor || 0), 0);
+
+        return {
+          mes_ano: mes,
+          receitas,
+          despesas,
+          saldo: receitas - despesas,
+        };
+      });
+
+      setEvolucao(evolucaoData);
+    } catch (err) {
+      console.error("Erro ao carregar evolução:", err);
     }
   };
 
@@ -100,9 +163,58 @@ export default function Dashboard() {
       setValor("");
       setDataLancamento(getDataAtual());
       carregarOrcamentos(token!);
+      carregarEvolucao(token!);
     } catch (err: any) {
       alert("Erro ao adicionar lançamento: " + (err.message || "Tente novamente."));
     }
+  };
+
+  const excluirLancamento = async (id: string) => {
+    if (!confirm("Tem certeza que deseja excluir este lançamento?")) return;
+
+    const token = localStorage.getItem("token");
+
+    try {
+      await apiFetch(`/orcamentos/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      alert("Lançamento excluído com sucesso!");
+      carregarOrcamentos(token!);
+      carregarEvolucao(token!);
+    } catch (err: any) {
+      alert("Erro ao excluir lançamento: " + (err.message || "Tente novamente."));
+    }
+  };
+
+  const exportarCSV = () => {
+    const csvData = orcamentos.map(o => ({
+      Data: new Date(o.data).toLocaleDateString("pt-BR"),
+      Tipo: o.tipo === "receita" ? "Receita" : "Despesa",
+      Descrição: o.descricao,
+      Valor: `R$ ${Math.abs(o.valor).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`,
+    }));
+
+    const csv = Papa.unparse(csvData);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `lancamentos_${mesSelecionado}.csv`;
+    link.click();
+  };
+
+  const exportarExcel = () => {
+    const ws = XLSX.utils.json_to_sheet(orcamentos.map(o => ({
+      Data: new Date(o.data).toLocaleDateString("pt-BR"),
+      Tipo: o.tipo === "receita" ? "Receita" : "Despesa",
+      Descrição: o.descricao,
+      Valor: Math.abs(o.valor),
+    })));
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Lançamentos");
+    XLSX.writeFile(wb, `lancamentos_${mesSelecionado}.xlsx`);
   };
 
   const handleLogout = () => {
@@ -110,7 +222,7 @@ export default function Dashboard() {
     navigate("/login");
   };
 
-  // Cálculos
+  // Cálculos para gráfico de pizza
   const totalReceitas = orcamentos
     .filter((o) => o.tipo === "receita")
     .reduce((sum, o) => sum + Math.abs(o.valor || 0), 0);
@@ -135,22 +247,22 @@ export default function Dashboard() {
       {/* Navbar */}
       <nav className="bg-white shadow-md px-6 py-4 flex justify-between items-center sticky top-0 z-10">
         <h1 className="text-2xl font-bold text-gray-800">Meu Controle Financeiro</h1>
-          <div className="flex items-center gap-4">
-            {user?.role === "Administrador" && (
-              <button
-                onClick={() => navigate("/admin")}
-                className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded-lg transition font-medium"
-              >
-                Administração
-              </button>
-            )}
+        <div className="flex items-center gap-4">
+          {user?.role === "Administrador" && (
             <button
-              onClick={handleLogout}
-              className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg transition font-medium"
+              onClick={() => navigate("/admin")}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-5 py-2 rounded-lg transition font-medium"
             >
-              Sair
+              Administração
             </button>
-          </div>
+          )}
+          <button
+            onClick={handleLogout}
+            className="bg-red-600 hover:bg-red-700 text-white px-5 py-2 rounded-lg transition font-medium"
+          >
+            Sair
+          </button>
+        </div>
       </nav>
 
       <main className="p-6 md:p-10 max-w-7xl mx-auto">
@@ -164,7 +276,7 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Filtro de mês */}
+        {/* Filtros */}
         <div className="mb-8 flex flex-col sm:flex-row sm:items-center gap-4 bg-white p-5 rounded-xl shadow-sm">
           <label className="font-medium text-gray-700 text-lg">Filtrar por mês:</label>
           <input
@@ -173,6 +285,18 @@ export default function Dashboard() {
             onChange={(e) => setMesSelecionado(e.target.value)}
             className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
           />
+
+          <label className="font-medium text-gray-700 text-lg ml-4">Ano:</label>
+          <select
+            value={anoSelecionado}
+            onChange={(e) => setAnoSelecionado(e.target.value)}
+            className="border border-gray-300 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          >
+            <option value="2025">2025</option>
+            <option value="2026">2026</option>
+            <option value="2027">2027</option>
+            {/* Adicione mais anos conforme necessário */}
+          </select>
         </div>
 
         {/* Cards de resumo */}
@@ -203,7 +327,23 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Gráfico - abordagem simples e sem erro de tipagem */}
+        {/* Botões de exportação */}
+        <div className="mb-8 flex flex-wrap gap-4">
+          <button
+            onClick={exportarCSV}
+            className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg transition font-medium"
+          >
+            Exportar CSV
+          </button>
+          <button
+            onClick={exportarExcel}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition font-medium"
+          >
+            Exportar Excel
+          </button>
+        </div>
+
+        {/* Gráfico de pizza */}
         {dadosGrafico.length > 0 ? (
           <div className="bg-white rounded-xl shadow-sm p-8 mb-10">
             <h3 className="text-2xl font-bold text-gray-800 mb-6">
@@ -219,28 +359,14 @@ export default function Dashboard() {
                     labelLine={true}
                     outerRadius={110}
                     dataKey="value"
-                    // Label simples - sem tipagem explícita para evitar erro
-                    label={({ name, percent }) => {
-                      const p = Number(percent);
-                      if (isNaN(p)) return name;
-                      return `${name} ${(p * 100).toFixed(0)}%`;
-                    }}
+                    // @ts-ignore
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
                   >
                     {dadosGrafico.map((_, index) => (
                       <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    // Formatter simples e seguro
-                    formatter={(value) => {
-                      const num = Number(value);
-                      if (isNaN(num)) return "R$ 0,00";
-                      return `R$ ${num.toLocaleString("pt-BR", {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}`;
-                    }}
-                  />
+                  <Tooltip formatter={(value) => `R$ ${Number(value).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} />
                   <Legend verticalAlign="bottom" height={36} />
                 </PieChart>
               </ResponsiveContainer>
@@ -249,6 +375,29 @@ export default function Dashboard() {
         ) : (
           <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-8 text-center mb-10 text-gray-700">
             Nenhum lançamento registrado neste mês para exibir no gráfico.
+          </div>
+        )}
+
+        {/* Gráfico de linha */}
+        {evolucao.length > 0 && (
+          <div className="bg-white rounded-xl shadow-sm p-8 mb-10">
+            <h3 className="text-2xl font-bold text-gray-800 mb-6">
+              Evolução Receitas × Despesas ({anoSelecionado})
+            </h3>
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={evolucao}>
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="mes_ano" />
+                  <YAxis />
+                  <Tooltip formatter={(value) => `R$ ${Number(value).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} />
+                  <Legend />
+                  <Line type="monotone" dataKey="receitas" stroke="#10B981" name="Receitas" />
+                  <Line type="monotone" dataKey="despesas" stroke="#EF4444" name="Despesas" />
+                  <Line type="monotone" dataKey="saldo" stroke="#3B82F6" name="Saldo" />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         )}
 
@@ -310,7 +459,7 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {/* Lista de lançamentos */}
+        {/* Lista de lançamentos com exclusão */}
         <div className="bg-white rounded-xl shadow-sm p-8">
           <h3 className="text-2xl font-bold text-gray-800 mb-6">
             Lançamentos de {mesSelecionado || "selecione um mês"}
@@ -337,6 +486,9 @@ export default function Dashboard() {
                     <th className="px-6 py-4 text-right text-sm font-medium text-gray-700 uppercase tracking-wider">
                       Valor (R$)
                     </th>
+                    <th className="px-6 py-4 text-right text-sm font-medium text-gray-700 uppercase tracking-wider">
+                      Ações
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
@@ -348,9 +500,7 @@ export default function Dashboard() {
                       <td className="px-6 py-4 whitespace-nowrap">
                         <span
                           className={`inline-flex px-3 py-1 text-sm font-medium rounded-full ${
-                            o.tipo === "receita"
-                              ? "bg-green-100 text-green-800"
-                              : "bg-red-100 text-red-800"
+                            o.tipo === "receita" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"
                           }`}
                         >
                           {o.tipo === "receita" ? "Receita" : "Despesa"}
@@ -361,6 +511,14 @@ export default function Dashboard() {
                         <span className={o.valor >= 0 ? "text-green-600" : "text-red-600"}>
                           R$ {Math.abs(o.valor).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}
                         </span>
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <button
+                          onClick={() => excluirLancamento(o.id)}
+                          className="text-red-600 hover:text-red-800 font-medium"
+                        >
+                          Excluir
+                        </button>
                       </td>
                     </tr>
                   ))}
